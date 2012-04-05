@@ -1,0 +1,401 @@
+#!/bin/bash
+#set -x
+#######
+#  Boston University 
+#  Kittyhawk FOX development setup script
+######
+
+# constants
+typeset -r DISTRO=lenny
+typeset -r RPATH=$DISTRO
+typeset -r NODEUSER=khdev
+#typeset -r FOXDEVDIR=/bgsys/argonne-utils/profiles/kh/khfoxdev
+typeset -r KHDEVDIR=/scratch/dschatz/khdev
+typeset -r WHENOUT=/tmp/$user.$$.wout
+typeset  KERNEL=${KHDEVDIR}/kernels/uImage
+typeset  RAMDISK=${KHDEVDIR}/apps/nbd-initrd.cpio.gz.uimg
+#typeset -r ROOTKEYFILE=~/.ssh/id_rsa.pub
+typeset -r DEBIANTUN=debian.gtisc.gatech.edu
+typeset -r KHGETKEY=${KHDEVDIR}/etc/keys/id_rsa.pub
+#typeset -r LOCKDIR=${FOXDEVDIR}/var/locks
+
+#globals 
+#typeset -x debug=1
+typeset -x doconsole=0
+typeset -x dotun=1
+typeset -x host
+typeset -x con
+typeset -x ip
+typeset -x rkey
+
+# TRAP on all normal terminations HUP/1, INT/2, QUIT/3, TERM/15, ERR
+#trap cleanup 1 2 3 15 EXIT
+trap cleanup EXIT
+
+function usage
+{
+    echo -e \
+"\`$(basename $0)' [-h] [-c] [-T] [-k kernel] [-r ramdisk] [-l khctlserver ip] <root disk image>\n"\
+        "\n"                                                           \
+        "  -c open  xterm connected to the console of your khfoxdev host\n"\
+        "  -T suppress starting of tunnel\n" \
+        "  -k <kernel> overide default kernel for khfoxdev host with specified kernel uimage\n"\
+        "  -r <ramdisk> overide default startup ramdisk with specified ramdisk\n"\
+	"  -l <khctlserver ip> provide khctlserver ip\n"\
+        "  -h print this usage\n"
+}
+
+processargs()
+{
+    local    origargs="$@"
+    local -i optcount=0  
+    
+    while getopts "cThk:r:" OPT
+      do 
+      case $OPT in
+          ("c") doconsole=1; (( optcount=optcount + 1 ));;
+          ("T") dotun=0; (( optcount=optcount + 1 ));;
+          ("k") KERNEL=$OPTARG; (( optcount=optcount + 2 ));;
+          ("r") RAMDISK=$OPTARG; (( optcount=optcount + 2 ));;
+          ("l") khctlserver=$OPTARG; (( optcount=optcount + 2));;
+          ("h") usage; exit -1;;
+      esac
+    done
+
+    shift $optcount
+  
+    if [ $# -eq 0 -o -f "$1" ] then
+        usage
+        exit 1
+    fi
+
+    DISK="$1"
+}
+
+# function lock
+# {
+#     local lockname=$1
+#     local lockfile=$LOCKDIR/${lockname}.lock
+#     local pidfile=$LOCKDIR/${lockname}.pid 
+
+#     if [[ -z $lockname ]]
+#     then
+#       echo "USAGE: $FUNCNAME <lock>"  >&2
+#       return -1
+#     fi
+
+#     if [[ ! -d $LOCKDIR ]]
+#     then
+#       if ! mkdir -p $LOCKDIR
+#       then
+#          echo "ERROR: $FUNCNAME: $LOCKDIR does not exist "\
+#               "and cannot be created" >&2
+#          exit -1
+#       fi
+#     fi
+
+#     # Acquire lock
+#     if lockfile -r0 $lockfile
+#     then       
+#       # record that this pid created the lock
+#       echo $$ >> $pidfile
+#       return 0
+#     else
+#       return -1
+#     fi
+# }
+
+# function unlock
+# {
+#     local lockname=$1
+#     local lockfile=$LOCKDIR/${lockname}.lock
+#     local pidfile=$LOCKDIR/${lockname}.pid 
+
+#     if [[ -z $lockname ]]
+#     then
+#       echo "USAGE: $FUNCNAME <lock>"  >&2
+#       return -1
+#     fi
+#     # Release lock if this pid created it
+#     if [[ $(cat $pidfile) = $$ ]]
+#     then
+#       rm -f $pidfile
+#       rm -f $lockfile
+#     fi
+# }
+
+function killchildren 
+{
+  echo "killchildren : $1"
+  ppid=$1
+  if [[ -z $ppid ]]
+  then
+    ppid=$$
+  fi
+  children="$(ps --ppid $ppid -o pid --no-headings)" 
+  for pid in "$children"
+  do
+    if [[ -n $pid ]]
+    then
+      echo "killing $pid"
+      kill $pid > /dev/null 2>&1
+    fi
+  done
+}
+
+function cleanup
+{
+  echo "cleaning up" > /dev/stderr
+  if [[ -a $WHENOUT ]]; then
+      rm $whenout
+  fi
+  killchildren
+  unlock $USER
+}
+
+function setfdtdate
+{
+    local now=$(date -u)
+    local year=$(date -u -d "$now" +"%-Y")
+    local fdtdate="$(printf 'fdt mknode / rtc && fdt set /rtc second "[00 00 00 %02x]" && fdt set /rtc minute "[00 00 00 %02x]" && fdt set /rtc hour "[00 00 00 %02x]" && fdt set /rtc month "[00 00 00 %02x]" && fdt set /rtc mday "[00 00 00 %02x]" && fdt set /rtc year "[00 00 %02x %02x]"\n' `date -u -d "$now" +"%-S %-M %-H %-m %-d"` $(( $year / 256 )) $(( $year % 256 )))"
+    echo "$1" | khdo write "$fdtdate"
+    return 1;
+}
+
+# function getuserinfo
+# {
+#   local uinfo=$(grep  $USER $FOXDEVDIR/etc/users 2>/dev/null)
+
+#   if [[ -z $uinfo ]]
+#   then 
+#     echo "ERROR: Sorry $USER is not a known khfoxdev user" > /dev/stderr
+#     return -1
+#   fi
+
+#   if [[ -a $ROOTKEYFILE ]]
+#   then
+#     rkey="$(cat $ROOTKEYFILE)"
+#   else 
+#     echo "ERROR: Sorry $ROOTKEYFILE does not exist" > /dev/stderr
+#     return -1
+#   fi
+
+#   uinfo=${uinfo#*:}
+#   shelf=${uinfo%%:*}; uinfo=${uinfo#*:}
+#   slot=${uinfo%%:*}; uinfo=${uinfo#*:}
+#   part=${uinfo#*:}; uinfo=${uinfo#*:}
+#   dev=e${shelf}.${slot}p${part}
+
+#   return 0
+# }
+
+function gethost
+{
+  host="$(khget -x -i $NODEUSER 1)"
+  con=$(echo "$host" | khdo concmd "echo %con%")
+  if [[ -z $con ]]
+  then 
+   echo "ERROR: not able to get a host node: khget failed: $host" > /dev/stderr
+   return -1
+  else
+   echo "$host" > ${USER}.hostinfo
+   ip=$(echo "$host" | khdo peripcmd "echo %ip%")
+  fi  
+  return 0
+}
+
+function testkh
+{
+   if [[ -z $khctlserver ]]
+   then
+     echo "ERROR: khctlserver not set.  Either specify on command line or set khctlserver env" > /dev/stderr
+     return -1
+   else
+     if ! ping -c 1 $khctlserver > /dev/null 2>&1 
+     then
+       echo "ERROR: not able to reach khctlserver:  $khctlserver" > /dev/stderr
+       return -1
+     fi
+   fi
+
+   if ! type -a khget > /dev/null 2>&1 
+   then
+     echo "ERROR: not able to find khget and other kh tools in your path"
+     return -1
+   fi
+
+   if ! khget 2>&1  | grep -q khctl > /dev/null 2>&1
+   then
+     echo "ERROR: khget does not seem to be working :-( $(khget)"
+     return -1  
+   fi
+
+   if [[ ! -a $KERNEL ]]
+   then
+     echo "ERROR: not able to find $KERNEL" > /dev/stderr
+     return -1
+   fi
+
+    if [[ -n $KERNEL && $(file -b $KERNEL) != "u-boot/PPCBoot image" ]]; then
+      echo "ERROR: $KERNEL does not seem to be u-boot  image" > /dev/stderr
+      exit 1
+    fi
+  
+   if [[ ! -a $RAMDISK ]]
+   then
+     echo "ERROR: not able to find $RAMDISK" > /dev/stderr
+     return -1
+   fi
+
+   if [[ ! -a $DISK ]]
+   then
+     echo "ERROR: not able to find $DISK" > /dev/stderr
+     return -1
+   fi
+
+   return 0
+}
+
+function prepkh 
+{
+    if ! cat ${KHGETKEY} | ssh root@$khctlserver 'cat >> .ssh/authorized_keys'
+	then
+	echo "ERROR: was not able to install $KHGETKEY on to khctlserver ($khctlserver)"
+	return -1
+    fi
+}
+    
+function loadkernel
+{
+  echo "$host" | khdo loadkernel $KERNEL
+  return 0
+}
+
+function loadramdisk
+{
+  echo "$host" | khdo loadramdisk $RAMDISK  
+  return 0
+}
+
+function bootnode
+{
+  when "bash-3.1# " /dev/null ssh $con > $WHENOUT &
+  wpid=$(jobs -p %%)
+  sleep 0.5
+
+  setfdtdate "$host"
+
+  echo "$host" | khdo writecon "run kboot"
+
+  wait $wpid
+  rm $WHENOUT
+  return 0
+}
+
+## main
+
+processargs "$@"
+
+
+if ! testkh
+then
+  exit -1
+fi
+
+# if ! getuserinfo
+# then 
+#    exit -1
+# fi
+
+# if ! lock "$USER"
+# then
+#    echo "ERROR:  you seem to already be running an instance of khfoxdev"
+#    echo "         if not then cleanup via: rm -f $LOCKDIR/${lockname}.lock"
+#    exit -1
+# fi
+
+if ! prepkh 
+then
+    exit -1
+fi
+  
+
+# echo "khfoxdev: $USER your CORAID root is $dev" > /dev/stderr
+
+echo "khdev: getting a node for your dev host" > /dev/stderr
+if ! gethost
+then
+   exit -1
+fi 
+
+echo "khdev: loading kernel" > /dev/stderr
+if ! loadkernel
+then 
+   exit -1
+fi
+
+echo "khdev: loading initrd" > /dev/stderr
+if ! loadramdisk 
+then
+  exit -1
+fi
+
+echo "khdev: booting host" > /dev/stderr 
+if ! bootnode
+then
+  exit -1
+fi
+
+if [[ $doconsole = 1 ]]
+then
+  echo "$host" | khdo concmd "khxcon %con% &"
+fi
+
+echo "acquiring an open port"
+# 
+
+commands="nbd-client $login_ip $port /dev/nbd/nbd0;
+ mount /dev/nbd/nbd0 /mnt;
+ echo kh-\$(cat /proc/device-tree/u-boot-env/bgp_location) > /mnt/$RPATH/etc/hostname;
+ cat /mnt/$RPATH/etc/hosts > /mnt/$RPATH/etc/hosts.old;
+ cat /mnt/$RPATH/etc/hosts.old | sed \"s/^127.0.0.1 localhost.*\$/127.0.0.1 localhost kh-\$(cat /proc/device-tree/u-boot-env/bgp_location)/\" > /mnt/$RPATH/etc/hosts;
+ mkdir /mnt/$RPATH/root/.ssh;
+ chmod 700 /mnt/$RPATH/root/.ssh;
+ echo \"$rkey\" > /mnt/$RPATH/root/.ssh/authorized_keys2;
+ chmod 600 /mnt/$RPATH/root/.ssh/authorized_keys2;
+ cat /dev/null > /mnt/$RPATH/etc/resolv.conf;
+ umount /dev/pts; umount /sys; umount /proc;
+ exec chroot /mnt/$RPATH /sbin/init;" 
+
+if [[ $debug = 1 ]]
+then
+  echo "press enter to continue" > /dev/stderr
+  read
+fi
+
+echo "booting host from $dev on coraid ... this can take a little while for
+the  coraid to be found" > /dev/stderr
+
+echo "$host" | khdo writecon $commands
+
+if [[ $debug = 1 ]]
+then
+  echo press enter to continue > /dev/stderr
+  read
+fi
+
+if [[ $dotun = 1 ]]
+then
+  echo "starting a tunnel for you to $DEBIANTUN"
+  khmktun $ip $DEBIANTUN >/dev/null 2>&1 &
+fi
+
+echo "$host"
+
+echo "sshing to your khdevfox host: $ip"
+echo "KEEP THIS OPEN TILL YOU ARE DONE: halt host which finished"
+ssh -o LogLevel=QUIET -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no -X root@$ip
+
+echo "WARNING: Don't forget to halt your host $ip before running khdev again"
+
+#ssh -o LogLevel=QUIET -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no root@$ip halt
