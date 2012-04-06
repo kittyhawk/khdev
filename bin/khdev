@@ -2,31 +2,43 @@
 #set -x
 #######
 #  Boston University 
-#  Kittyhawk FOX development setup script
+#  Kittyhawk development environment startup script
 ######
 
-# constants
-typeset -r DISTRO=lenny
-typeset -r RPATH=$DISTRO
-typeset -r NODEUSER=khdev
-#typeset -r FOXDEVDIR=/bgsys/argonne-utils/profiles/kh/khfoxdev
-typeset -r KHDEVDIR=/scratch/dschatz/khdev
-typeset -r WHENOUT=/tmp/$user.$$.wout
-typeset  KERNEL=${KHDEVDIR}/kernels/uImage
-typeset  RAMDISK=${KHDEVDIR}/apps/nbd-initrd.cpio.gz.uimg
-#typeset -r ROOTKEYFILE=~/.ssh/id_rsa.pub
-typeset -r DEBIANTUN=debian.gtisc.gatech.edu
-typeset -r KHGETKEY=${KHDEVDIR}/etc/keys/id_rsa.pub
-#typeset -r LOCKDIR=${FOXDEVDIR}/var/locks
+typeset KHDEVDIR=${KHDEV_DIR}
+
+if [[ -z $KHDEVDIR ]]; then
+   KHDEVDIR="$(dirname $(type -ap $0))/.."
+fi 
+
+if [[ ! -d $KHDEVDIR ]]; then
+    echo "ERROR: $KHDEVDIR DOES NOT EXIST"
+fi
+
+# constants that can all be overridden with appropriate KHDEV_* VARS
+typeset -r DISTRO=${KHDEV_DISTRO:-lenny}
+typeset -r RPATH=${KHDEV_RPATH:-$DISTRO} 
+typeset -r NODEUSER=${KHDEV_USER:-khdev} 
+typeset  KERNEL=${KHDEV_KERNEL:-${KHDEVDIR}/kernels/nbd/uImage} 
+typeset  RAMDISK=${KHDEV_RAMDISK:-${KHDEVDIR}/apps/nbd-initrd.cpio.gz.uimg} 
+typeset -r DEBIANTUN=${KHDEV_DEBIANTUN:-debian.gtisc.gatech.edu} 
+typeset -r BGIPREFIX=${KHDEV_BGIPPREFIX:-172}
+typeset -r NBDSERVER=${KHDEV_NBDSERVER:-${KHDEVDIR}/bin/nbd-server}
+
+typeset -r WHENOUT=/tmp/$user.$$.wout 
+
 
 #globals 
-#typeset -x debug=1
+typeset -x debug=0
 typeset -x doconsole=0
 typeset -x dotun=1
 typeset -x host
 typeset -x con
 typeset -x ip
 typeset -x rkey
+typeset -x nbdserverip
+typeset -x -i nbdserverport
+typeset -x nbdserverpid=0
 
 # TRAP on all normal terminations HUP/1, INT/2, QUIT/3, TERM/15, ERR
 #trap cleanup 1 2 3 15 EXIT
@@ -36,7 +48,8 @@ function usage
 {
     echo -e \
 "\`$(basename $0)' [-h] [-c] [-T] [-k kernel] [-r ramdisk] [-l khctlserver ip] <root disk image>\n"\
-        "\n"                                                           \
+        "\n"\        
+	"  -d debug startup"\
         "  -c open  xterm connected to the console of your khfoxdev host\n"\
         "  -T suppress starting of tunnel\n" \
         "  -k <kernel> overide default kernel for khfoxdev host with specified kernel uimage\n"\
@@ -50,9 +63,10 @@ processargs()
     local    origargs="$@"
     local -i optcount=0  
     
-    while getopts "cThk:r:" OPT
+    while getopts "dcThk:r:" OPT
       do 
       case $OPT in
+	  ("d") debug=1; (( optcount=optcount + 1 ));;
           ("c") doconsole=1; (( optcount=optcount + 1 ));;
           ("T") dotun=0; (( optcount=optcount + 1 ));;
           ("k") KERNEL=$OPTARG; (( optcount=optcount + 2 ));;
@@ -64,65 +78,13 @@ processargs()
 
     shift $optcount
   
-    if [ $# -eq 0 -o -f "$1" ] then
+    if [[ $# -eq 0 ]]; then
         usage
         exit 1
     fi
 
     DISK="$1"
 }
-
-# function lock
-# {
-#     local lockname=$1
-#     local lockfile=$LOCKDIR/${lockname}.lock
-#     local pidfile=$LOCKDIR/${lockname}.pid 
-
-#     if [[ -z $lockname ]]
-#     then
-#       echo "USAGE: $FUNCNAME <lock>"  >&2
-#       return -1
-#     fi
-
-#     if [[ ! -d $LOCKDIR ]]
-#     then
-#       if ! mkdir -p $LOCKDIR
-#       then
-#          echo "ERROR: $FUNCNAME: $LOCKDIR does not exist "\
-#               "and cannot be created" >&2
-#          exit -1
-#       fi
-#     fi
-
-#     # Acquire lock
-#     if lockfile -r0 $lockfile
-#     then       
-#       # record that this pid created the lock
-#       echo $$ >> $pidfile
-#       return 0
-#     else
-#       return -1
-#     fi
-# }
-
-# function unlock
-# {
-#     local lockname=$1
-#     local lockfile=$LOCKDIR/${lockname}.lock
-#     local pidfile=$LOCKDIR/${lockname}.pid 
-
-#     if [[ -z $lockname ]]
-#     then
-#       echo "USAGE: $FUNCNAME <lock>"  >&2
-#       return -1
-#     fi
-#     # Release lock if this pid created it
-#     if [[ $(cat $pidfile) = $$ ]]
-#     then
-#       rm -f $pidfile
-#       rm -f $lockfile
-#     fi
-# }
 
 function killchildren 
 {
@@ -150,7 +112,10 @@ function cleanup
       rm $whenout
   fi
   killchildren
-  unlock $USER
+  if (( $nbdserverpid != 0 )); then
+    echo "FIXME: Do we really want to do this ??? killing nbd-server $nbdserverpid" > /dev/stderr
+    kill $nbdserverpid
+  fi
 }
 
 function setfdtdate
@@ -162,32 +127,62 @@ function setfdtdate
     return 1;
 }
 
-# function getuserinfo
-# {
-#   local uinfo=$(grep  $USER $FOXDEVDIR/etc/users 2>/dev/null)
+function myIPAddrs
+{
+   local net
+   local ip
+   local rest
+   local rc
 
-#   if [[ -z $uinfo ]]
-#   then 
-#     echo "ERROR: Sorry $USER is not a known khfoxdev user" > /dev/stderr
-#     return -1
-#   fi
+   # If no argument all configured ip address are returned
+   # otherwise only for the speccified interface
+   ifconfig $1 2> /dev/null | grep 'inet addr' | while read net ip rest
+   do
+     ip=${ip##addr:}
+     if [[ $ip != 127.0.0.1 ]]
+     then
+        echo $ip
+     fi
+   done
+}
 
-#   if [[ -a $ROOTKEYFILE ]]
-#   then
-#     rkey="$(cat $ROOTKEYFILE)"
-#   else 
-#     echo "ERROR: Sorry $ROOTKEYFILE does not exist" > /dev/stderr
-#     return -1
-#   fi
+function myInterfaces
+{
+   local iface
+   local rest
 
-#   uinfo=${uinfo#*:}
-#   shelf=${uinfo%%:*}; uinfo=${uinfo#*:}
-#   slot=${uinfo%%:*}; uinfo=${uinfo#*:}
-#   part=${uinfo#*:}; uinfo=${uinfo#*:}
-#   dev=e${shelf}.${slot}p${part}
+   ifconfig | grep Link | while read iface rest
+   do
+      echo $iface
+   done
+}
 
-#   return 0
-# }
+function interfaceAddr
+{
+  local iface
+  local ip
+
+  if [[ -z $1 ]]
+  then
+    echo "USAGE: internfaceAddr <ip>" >&2
+    return -1
+  fi
+
+  for iface in $(myInterfaces) 
+  do
+      ip=$(ifconfig $iface | grep 'inet addr')
+      ip=${ip#*:}
+      ip=${ip%% *}
+      if [[ $ip = "$1"* ]]
+      then
+        echo $iface
+        return 0
+      fi
+  done
+
+  return -1
+}
+
 
 function gethost
 {
@@ -253,6 +248,12 @@ function testkh
      return -1
    fi
 
+   if [[ ! -a $NBDSERVER ]]
+   then
+     echo "ERROR: not able to file $NBDSERVER" > /dev/stderr
+     return -1
+   fi
+
    return 0
 }
 
@@ -279,7 +280,7 @@ function loadramdisk
 
 function bootnode
 {
-  when "bash-3.1# " /dev/null ssh $con > $WHENOUT &
+  when "bash-3.2# " /dev/null ssh $con > $WHENOUT &
   wpid=$(jobs -p %%)
   sleep 0.5
 
@@ -292,6 +293,29 @@ function bootnode
   return 0
 }
 
+function startNBD
+{
+  local  -i i
+  local pidfile=$(mktemp).pid
+  local -i start=-1
+
+  for ((i=0; i<10; i++))
+  do
+   nbdserverport=$(( ($UID + $RANDOM) % (2**16) ))
+   echo "$FUNCNAME: $i attempt to start $NDBSERVER -p $pidfile $nbdserverport $DISK"
+   $NBDSERVER -p $pidfile $nbdserverport $DISK
+   nbdserverpid=$(cat $pidfile)
+   if netstat -lntp | grep ":$nbdserverport .*${nbdserverpid}\/$(basename $NBDSERVER)"
+   then
+     start=0
+     break
+   fi 
+  done
+
+  rm $pidfile
+  return $start
+}
+
 ## main
 
 processargs "$@"
@@ -302,25 +326,30 @@ then
   exit -1
 fi
 
-# if ! getuserinfo
-# then 
+#
+#if ! prepkh 
+#then
 #    exit -1
-# fi
+#fi
 
-# if ! lock "$USER"
-# then
-#    echo "ERROR:  you seem to already be running an instance of khfoxdev"
-#    echo "         if not then cleanup via: rm -f $LOCKDIR/${lockname}.lock"
-#    exit -1
-# fi
+# startup nbd-server
 
-if ! prepkh 
+nbdserverip=$(myIPAddrs $(interfaceAddr $BGIPREFIX))
+
+if ! startNBD
 then
-    exit -1
+  echo "ERROR: failed to start $NBDSERVER" > /dev/stderr
+  exit -1
 fi
-  
 
-# echo "khfoxdev: $USER your CORAID root is $dev" > /dev/stderr
+echo "started $NBDSERVER on $nbdserverip:$nbdserverport with pid: $nbdserverpid serving $DISK"
+
+if [[ $debug = 1 ]]
+then
+  echo "press enter to continue" > /dev/stderr
+  read
+fi
+
 
 echo "khdev: getting a node for your dev host" > /dev/stderr
 if ! gethost
@@ -328,20 +357,28 @@ then
    exit -1
 fi 
 
+if [[ $debug = 1 ]]
+then
+  echo "host=$host"
+  echo "press enter to continue" > /dev/stderr
+  read
+fi
+
 echo "khdev: loading kernel" > /dev/stderr
 if ! loadkernel
 then 
    exit -1
 fi
 
-echo "khdev: loading initrd" > /dev/stderr
-if ! loadramdisk 
+if [[ $debug = 1 ]]
 then
-  exit -1
+  echo "host=$host"
+  echo "press enter to continue" > /dev/stderr
+  read
 fi
 
-echo "khdev: booting host" > /dev/stderr 
-if ! bootnode
+echo "khdev: loading initrd" > /dev/stderr
+if ! loadramdisk 
 then
   exit -1
 fi
@@ -351,10 +388,20 @@ then
   echo "$host" | khdo concmd "khxcon %con% &"
 fi
 
-echo "acquiring an open port"
-# 
+if [[ $debug = 1 ]]
+then
+  echo "host=$host"
+  echo "press enter to continue" > /dev/stderr
+  read
+fi
 
-commands="nbd-client $login_ip $port /dev/nbd/nbd0;
+echo "khdev: booting host" > /dev/stderr 
+if ! bootnode
+then
+  exit -1
+fi
+
+commands="nbd-client $nbdserverip $nbdserverport /dev/nbd/nbd0;
  mount /dev/nbd/nbd0 /mnt;
  echo kh-\$(cat /proc/device-tree/u-boot-env/bgp_location) > /mnt/$RPATH/etc/hostname;
  cat /mnt/$RPATH/etc/hosts > /mnt/$RPATH/etc/hosts.old;
@@ -372,9 +419,6 @@ then
   echo "press enter to continue" > /dev/stderr
   read
 fi
-
-echo "booting host from $dev on coraid ... this can take a little while for
-the  coraid to be found" > /dev/stderr
 
 echo "$host" | khdo writecon $commands
 
