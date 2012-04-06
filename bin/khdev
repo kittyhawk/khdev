@@ -47,7 +47,7 @@ trap cleanup EXIT
 function usage
 {
     echo -e \
-"\`$(basename $0)' [-h] [-c] [-T] [-k kernel] [-r ramdisk] [-l khctlserver ip] <root disk image>\n"\
+"\`$(basename $0)' [-h] [-c] [-T] [-k kernel] [-r ramdisk] [-l khctlserver ip] [-K key] <root disk image>\n"\
         "\n"\        
 	"  -d debug startup"\
         "  -c open  xterm connected to the console of your khfoxdev host\n"\
@@ -55,6 +55,7 @@ function usage
         "  -k <kernel> overide default kernel for khfoxdev host with specified kernel uimage\n"\
         "  -r <ramdisk> overide default startup ramdisk with specified ramdisk\n"\
 	"  -l <khctlserver ip> provide khctlserver ip\n"\
+        "  -K <public ssh key> key to install for root access\n"\
         "  -h print this usage\n"
 }
 
@@ -63,7 +64,7 @@ processargs()
     local    origargs="$@"
     local -i optcount=0  
     
-    while getopts "dcThk:r:" OPT
+    while getopts "dcThk:r:K:" OPT
       do 
       case $OPT in
 	  ("d") debug=1; (( optcount=optcount + 1 ));;
@@ -72,6 +73,7 @@ processargs()
           ("k") KERNEL=$OPTARG; (( optcount=optcount + 2 ));;
           ("r") RAMDISK=$OPTARG; (( optcount=optcount + 2 ));;
           ("l") khctlserver=$OPTARG; (( optcount=optcount + 2));;
+          ("K") rkey=$OPTARG; (( optcount=optcount + 2));;
           ("h") usage; exit -1;;
       esac
     done
@@ -403,22 +405,40 @@ fi
 
 commands="nbd-client $nbdserverip $nbdserverport /dev/nbd/nbd0;
  mount /dev/nbd/nbd0 /mnt;
- echo kh-\$(cat /proc/device-tree/u-boot-env/bgp_location) > /mnt/$RPATH/etc/hostname;
- cat /mnt/$RPATH/etc/hosts > /mnt/$RPATH/etc/hosts.old;
- cat /mnt/$RPATH/etc/hosts.old | sed \"s/^127.0.0.1 localhost.*\$/127.0.0.1 localhost kh-\$(cat /proc/device-tree/u-boot-env/bgp_location)/\" > /mnt/$RPATH/etc/hosts;
- mkdir /mnt/$RPATH/root/.ssh;
- chmod 700 /mnt/$RPATH/root/.ssh;
- echo \"$rkey\" > /mnt/$RPATH/root/.ssh/authorized_keys2;
- chmod 600 /mnt/$RPATH/root/.ssh/authorized_keys2;
- cat /dev/null > /mnt/$RPATH/etc/resolv.conf;
- umount /dev/pts; umount /sys; umount /proc;
- exec chroot /mnt/$RPATH /sbin/init;" 
+ echo kh-\$(cat /proc/device-tree/u-boot-env/bgp_location) > /mnt/$RPATH/etc/hostname;"
 
 if [[ $debug = 1 ]]
 then
   echo "press enter to continue" > /dev/stderr
   read
 fi
+
+echo "$host" | khdo writecon $commands
+
+if [[ $debug = 1 ]]
+then
+  echo press enter to continue > /dev/stderr
+  read
+fi
+
+if [[ -z $rkey ]]
+then
+ commands="mkdir /mnt/$RPATH/root/.ssh;
+ chmod 700 /mnt/$RPATH/root/.ssh;
+ echo \"$rkey\" >> /mnt/$RPATH/root/.ssh/authorized_keys2;
+ chmod 600 /mnt/$RPATH/root/.ssh/authorized_keys2;"
+fi
+
+echo "$host" | khdo writecon $commands
+
+if [[ $debug = 1 ]]
+then
+  echo press enter to continue > /dev/stderr
+  read
+fi
+
+commands="umount /dev/pts; umount /sys; umount /proc;
+ exec chroot /mnt/$RPATH /sbin/init;" 
 
 echo "$host" | khdo writecon $commands
 
