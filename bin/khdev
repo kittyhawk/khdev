@@ -116,7 +116,7 @@ function cleanup
   killchildren
   if (( $nbdserverpid != 0 )); then
     echo "FIXME: Do we really want to do this ??? killing nbd-server $nbdserverpid" > /dev/stderr
-    kill $nbdserverpid
+#    kill $nbdserverpid
   fi
 }
 
@@ -385,11 +385,6 @@ then
   exit -1
 fi
 
-if [[ $doconsole = 1 ]]
-then
-  echo "$host" | khdo concmd "khxcon %con% &"
-fi
-
 if [[ $debug = 1 ]]
 then
   echo "host=$host"
@@ -403,42 +398,84 @@ then
   exit -1
 fi
 
-commands="nbd-client $nbdserverip $nbdserverport /dev/nbd/nbd0;
- mount /dev/nbd/nbd0 /mnt;
- echo kh-\$(cat /proc/device-tree/u-boot-env/bgp_location) > /mnt/$RPATH/etc/hostname;"
+if [[ $doconsole = 1 ]]
+then
+  echo "$host" | khdo concmd "khxcon %con% &"
+fi
+
+
+commands="nbd-client $nbdserverip $nbdserverport /dev/nbd/nbd0 &"
 
 if [[ $debug = 1 ]]
 then
-  echo "press enter to continue" > /dev/stderr
+  echo "about to send : $commands"
+  echo press enter to continue > /dev/stderr
   read
 fi
 
 echo "$host" | khdo writecon $commands
 
+#
+#commands="while ! nbd-client -c /dev/nbd/nbd0; do for ((i=0;i<100000;i++)); do true; done; done"
+
+#if [[ $debug = 1 ]]
+#then
+#  echo "about to send : $commands"
+#  echo press enter to continue > /dev/stderr
+#  read
+#fi
+
+#echo "$host" | khdo writecon $commands
+
+
+commands="while ! mount /dev/nbd/nbd0 /mnt; do for ((i=0;i<100000;i++)); do true; done; done;"
+
 if [[ $debug = 1 ]]
 then
+  echo "about to send : $commands"
   echo press enter to continue > /dev/stderr
   read
 fi
 
-if [[ -z $rkey ]]
+echo "$host" | khdo writecon $commands
+
+
+commands="echo kh-\$(cat /proc/device-tree/u-boot-env/bgp_location) > /mnt/$RPATH/etc/hostname;"
+
+if [[ $debug = 1 ]]
+then
+  echo "about to send : $commands"
+  echo press enter to continue > /dev/stderr
+  read
+fi
+
+echo "$host" | khdo writecon $commands
+
+
+if [[ -n $rkey ]]
 then
  commands="mkdir /mnt/$RPATH/root/.ssh;
  chmod 700 /mnt/$RPATH/root/.ssh;
  echo \"$rkey\" >> /mnt/$RPATH/root/.ssh/authorized_keys2;
  chmod 600 /mnt/$RPATH/root/.ssh/authorized_keys2;"
-fi
-
-echo "$host" | khdo writecon $commands
-
-if [[ $debug = 1 ]]
-then
-  echo press enter to continue > /dev/stderr
-  read
+ if [[ $debug = 1 ]]
+ then
+   echo "about to send : $commands"
+   echo press enter to continue > /dev/stderr
+   read
+ fi
+ echo "$host" | khdo writecon $commands
 fi
 
 commands="umount /dev/pts; umount /sys; umount /proc;
  exec chroot /mnt/$RPATH /sbin/init;" 
+
+if [[ $debug = 1 ]]
+then
+  echo "about to send : $commands"
+  echo press enter to continue > /dev/stderr
+  read
+fi
 
 echo "$host" | khdo writecon $commands
 
