@@ -1,5 +1,5 @@
 #!/bin/bash
-#set -x
+set -x
 #######
 #  Boston University 
 #  Kittyhawk development environment startup script
@@ -477,7 +477,7 @@ if [[ -n $rkey ]]
 then
  commands="mkdir /mnt/$RPATH/root/.ssh;
  chmod 700 /mnt/$RPATH/root/.ssh;
- echo \"$rkey\" >> /mnt/$RPATH/root/.ssh/authorized_keys2;
+ echo \"$(cat $rkey)\" >> /mnt/$RPATH/root/.ssh/authorized_keys2;
  chmod 600 /mnt/$RPATH/root/.ssh/authorized_keys2;"
  if [[ $debug = 1 ]]
  then
