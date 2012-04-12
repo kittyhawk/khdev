@@ -116,7 +116,7 @@ function cleanup
   killchildren
   if (( $nbdserverpid != 0 )); then
     echo "FIXME: Do we really want to do this ??? killing nbd-server $nbdserverpid" > /dev/stderr
-#    kill $nbdserverpid
+    kill $nbdserverpid
   fi
 }
 
@@ -451,6 +451,27 @@ fi
 
 echo "$host" | khdo writecon $commands
 
+commands="cat /mnt/$RPATH/etc/hosts > /mnt/$RPATH/etc/hosts.old;"
+
+if [[ $debug = 1 ]]
+then
+  echo "about to send : $commands"
+  echo press enter to continue > /dev/stderr
+  read
+fi
+
+echo "$host" | khdo writecon $commands
+
+commands="cat /mnt/$RPATH/etc/hosts.old | sed \"s/^127.0.0.1 localhost.*\$/127.0.0.1 localhost kh-\$(cat /proc/device-tree/u-boot-env/bgp_location)/\" > /mnt/$RPATH/etc/hosts;"
+
+if [[ $debug = 1 ]]
+then
+  echo "about to send : $commands"
+  echo press enter to continue > /dev/stderr
+  read
+fi
+
+echo "$host" | khdo writecon $commands
 
 if [[ -n $rkey ]]
 then
