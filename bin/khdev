@@ -283,9 +283,9 @@ function fwdssh
 
   echo "$host" | grep '^nodeinfo:' | while read label rank uni eth0ip iouni iositeip rankinpset; 
   do
-     if [[ -n ${eth0ip} && -n ${iouni} && -n ${iositeip} && -n ${rankinpset} ]]; then
-	 natsshinfo="$(khsshfwd ${eth0ip} ${rankinpset} ${iositeip})"
-     fi
+    if [[ -n ${eth0ip} && -n ${iouni} && -n ${iositeip} && -n ${rankinpset} ]]; then
+	echo "$(khsshfwd ${eth0ip} ${rankinpset} ${iositeip})"
+    fi
   done
 }    
 
@@ -328,11 +328,13 @@ function startNBD
    echo "$FUNCNAME: $i attempt to start $NDBSERVER -p $pidfile $nbdserverport $DISK"
    $NBDSERVER -p $pidfile $nbdserverport $DISK
    nbdserverpid=$(cat $pidfile)
-   if netstat -lntp | grep ":$nbdserverport .*${nbdserverpid}\/$(basename $NBDSERVER)"
-   then
-     start=0
-     break
-   fi 
+#   if netstat -lntp | grep ":$nbdserverport .*${nbdserverpid}\/$(basename $NBDSERVER)"
+#   then
+#     start=0
+#     break
+#   fi 
+   start=0
+   break
   done
 
   rm $pidfile
@@ -387,7 +389,7 @@ then
   read
 fi
 
-fwdssh
+natsshinfo=$(fwdssh)
 
 if [[ -n $natsshinfo ]]
 then
@@ -506,7 +508,7 @@ if [[ -n $rkey ]]
 then
  commands="mkdir /mnt/$RPATH/root/.ssh;
  chmod 700 /mnt/$RPATH/root/.ssh;
- echo \"$(cat $rkey)\" >> /mnt/$RPATH/root/.ssh/authorized_keys2;
+ echo \"$rkey\" >> /mnt/$RPATH/root/.ssh/authorized_keys2;
  chmod 600 /mnt/$RPATH/root/.ssh/authorized_keys2;"
  if [[ $debug = 1 ]]
  then
