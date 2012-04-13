@@ -31,7 +31,7 @@ typeset -r WHENOUT=/tmp/$user.$$.wout
 #globals 
 typeset -x debug=0
 typeset -x doconsole=0
-typeset -x dotun=1
+typeset -x dotun=0
 typeset -x host
 typeset -x con
 typeset -x ip
@@ -39,6 +39,9 @@ typeset -x rkey
 typeset -x nbdserverip
 typeset -x -i nbdserverport
 typeset -x nbdserverpid=0
+typeset -x natsshinfo
+typeset -x hostip
+typeset -x hostport
 
 # TRAP on all normal terminations HUP/1, INT/2, QUIT/3, TERM/15, ERR
 #trap cleanup 1 2 3 15 EXIT
@@ -267,7 +270,25 @@ function prepkh
 	return -1
     fi
 }
-    
+
+function fwdssh
+{
+  local label
+  local rank
+  local uni
+  local eth0ip
+  local iouni
+  local iositeip
+  local rankinpset
+
+  echo "$host" | grep '^nodeinfo:' | while read label rank uni eth0ip iouni iositeip rankinpset; 
+  do
+     if [[ -n ${eth0ip} && -n ${iouni} && -n ${iositeip} && -n ${rankinpset} ]]; then
+	 natsshinfo="$(khsshfwd ${eth0ip} ${rankinpset} ${iositeip})"
+     fi
+  done
+}    
+
 function loadkernel
 {
   echo "$host" | khdo loadkernel $KERNEL
@@ -364,6 +385,14 @@ then
   echo "host=$host"
   echo "press enter to continue" > /dev/stderr
   read
+fi
+
+fwdssh
+
+if [[ -n $natsshinfo ]]
+then
+  echo "port foward for host has been configured: $natsshinfo"
+  echo "$natsshinfo" >> ${USER}.hostinfo
 fi
 
 echo "khdev: loading kernel" > /dev/stderr
@@ -514,10 +543,21 @@ fi
 
 echo "$host"
 
+if [[ -n $natsshinfo ]]
+then
+  hostip=${natsshinfo%% *}
+  hostip=${hostip%%:*}
+  hostport=${natsshinfo%% *}
+  hostport="${hostport##*:}"
+else
+  hostip=$ip
+  hostport=22
+fi
+
 echo "sshing to your khdevfox host: $ip"
 echo "KEEP THIS OPEN TILL YOU ARE DONE: halt host which finished"
-ssh -o LogLevel=QUIET -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no -X root@$ip
+ssh -p $hostport -o LogLevel=QUIET -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no -X root@$hostip
 
-echo "WARNING: Don't forget to halt your host $ip before running khdev again"
+echo "WARNING: Don't forget to halt your host $ip ($hostip:$hostport)  before running khdev again"
 
 #ssh -o LogLevel=QUIET -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no root@$ip halt
