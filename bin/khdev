@@ -119,7 +119,7 @@ function cleanup
   killchildren
   if (( $nbdserverpid != 0 )); then
     echo "FIXME: Do we really want to do this ??? killing nbd-server $nbdserverpid" > /dev/stderr
-    kill $nbdserverpid
+    kill -9 $nbdserverpid
   fi
 }
 
