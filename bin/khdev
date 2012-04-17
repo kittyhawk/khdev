@@ -51,15 +51,15 @@ function usage
 {
     echo -e \
 "\`$(basename $0)' [-h] [-c] [-T] [-k kernel] [-r ramdisk] [-l khctlserver ip] [-K key] <root disk image>\n"\
-        "\n"\        
-	"  -d debug startup"\
-        "  -c open  xterm connected to the console of your khfoxdev host\n"\
-        "  -T suppress starting of tunnel\n" \
-        "  -k <kernel> overide default kernel for khfoxdev host with specified kernel uimage\n"\
-        "  -r <ramdisk> overide default startup ramdisk with specified ramdisk\n"\
-	"  -l <khctlserver ip> provide khctlserver ip\n"\
-        "  -K <public ssh key> key to install for root access\n"\
-        "  -h print this usage\n"
+        "\n"\
+"  -d debug startup\n"\
+"  -c open  xterm connected to the console of your khfoxdev host\n"\
+"  -T suppress starting of tunnel\n" \
+"  -k <kernel> overide default kernel for khfoxdev host with specified kernel uimage\n"\
+"  -r <ramdisk> overide default startup ramdisk with specified ramdisk\n"\
+"  -l <khctlserver ip> provide khctlserver ip\n"\
+"  -K <public ssh key> key to install for root access\n"\
+"  -h print this usage\n"
 }
 
 processargs()
@@ -117,7 +117,7 @@ function cleanup
       rm $whenout
   fi
   killchildren
-  if (( $nbdserverpid != 0 )); then
+  if (( -n $nbdserverip && $nbdserverpid != 0 )); then
     echo "FIXME: Do we really want to do this ??? killing nbd-server $nbdserverpid" > /dev/stderr
     kill $nbdserverpid
   fi
@@ -238,7 +238,7 @@ function testkh
 
     if [[ -n $KERNEL && $(file -b $KERNEL) != "u-boot/PPCBoot image" ]]; then
       echo "ERROR: $KERNEL does not seem to be u-boot  image" > /dev/stderr
-      exit 1
+      exit -1
     fi
   
    if [[ ! -a $RAMDISK ]]
