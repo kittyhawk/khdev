@@ -557,7 +557,7 @@ else
   hostport=22
 fi
 
-echo "sshing to your khdevfox host: $ip"
+echo "sshing to your khdevfox host: $ip $natsshinfo"
 echo "KEEP THIS OPEN TILL YOU ARE DONE: halt host which finished"
 ssh -p $hostport -o LogLevel=QUIET -o UserKnownHostsFile=/dev/null -o CheckHostIP=no -o StrictHostKeyChecking=no -X root@$hostip
 
