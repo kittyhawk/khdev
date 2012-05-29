@@ -117,7 +117,7 @@ function cleanup
       rm $whenout
   fi
   killchildren
-  if (( -n $nbdserverip && $nbdserverpid != 0 )); then
+  if [[ -n $nbdserverip && $nbdserverpid != 0 ]]; then
     echo "FIXME: Do we really want to do this ??? killing nbd-server $nbdserverpid" > /dev/stderr
     killchildren $nbdserverpid
     kill -9 $nbdserverpid
